@@ -20,26 +20,19 @@ import org.eclipse.aether.version.Version;
 import org.slf4j.Logger;
 import org.sonatype.goodies.common.Loggers;
 import org.sonatype.nexus.plugins.ansiblegalaxy.AssetKind;
+import org.sonatype.nexus.plugins.ansiblegalaxy.internal.AnsibleGalaxyContentFacet;
 import org.sonatype.nexus.plugins.ansiblegalaxy.internal.metadata.AnsibleGalaxyAttributes;
 import org.sonatype.nexus.plugins.ansiblegalaxy.internal.proxy.replacer.*;
-import org.sonatype.nexus.plugins.ansiblegalaxy.internal.util.AnsibleGalaxyDataAccess;
 import org.sonatype.nexus.plugins.ansiblegalaxy.internal.util.AnsibleGalaxyPathUtils;
 import org.sonatype.nexus.plugins.ansiblegalaxy.internal.util.JsonSearcher;
 import org.sonatype.nexus.plugins.ansiblegalaxy.internal.util.StreamUtils;
 import org.sonatype.nexus.repository.cache.CacheInfo;
 import org.sonatype.nexus.repository.config.Configuration;
+import org.sonatype.nexus.repository.content.facet.ContentProxyFacetSupport;
 import org.sonatype.nexus.repository.http.HttpMethods;
-import org.sonatype.nexus.repository.proxy.ProxyFacet;
-import org.sonatype.nexus.repository.proxy.ProxyFacetSupport;
-import org.sonatype.nexus.repository.storage.Asset;
-import org.sonatype.nexus.repository.storage.StorageFacet;
-import org.sonatype.nexus.repository.storage.StorageTx;
-import org.sonatype.nexus.repository.transaction.TransactionalTouchBlob;
-import org.sonatype.nexus.repository.transaction.TransactionalTouchMetadata;
 import org.sonatype.nexus.repository.view.*;
 import org.sonatype.nexus.repository.view.matchers.token.TokenMatcher;
-import org.sonatype.nexus.repository.view.payloads.TempBlob;
-import org.sonatype.nexus.transaction.UnitOfWork;
+import org.sonatype.nexus.repository.view.payloads.StreamPayload;
 
 import javax.annotation.Nonnull;
 import javax.annotation.Nullable;
@@ -53,30 +46,25 @@ import java.util.List;
 import java.util.stream.Collectors;
 
 import static com.google.common.base.Preconditions.checkNotNull;
-import static org.sonatype.nexus.plugins.ansiblegalaxy.internal.util.AnsibleGalaxyDataAccess.HASH_ALGORITHMS;
 import static org.sonatype.nexus.plugins.ansiblegalaxy.internal.util.AnsibleGalaxyPathUtils.*;
 
 /**
- * AnsibleGalaxy {@link ProxyFacet} implementation.
+ * AnsibleGalaxy Proxy Facet implementation using Content API.
  *
  * @since 0.0.1
  */
 @Named
 public class AnsibleGalaxyProxyFacetImpl
-        extends ProxyFacetSupport
+        extends ContentProxyFacetSupport
         implements AnsibleGalaxyProxyFacet {
     private final Logger log = Loggers.getLogger(getClass());
 
     private final AnsibleGalaxyPathUtils ansiblegalaxyPathUtils;
 
-    private final AnsibleGalaxyDataAccess ansiblegalaxyDataAccess;
-
     @Inject
     public AnsibleGalaxyProxyFacetImpl(
-            final AnsibleGalaxyPathUtils ansiblegalaxyPathUtils,
-            final AnsibleGalaxyDataAccess ansiblegalaxyDataAccess) {
+            final AnsibleGalaxyPathUtils ansiblegalaxyPathUtils) {
         this.ansiblegalaxyPathUtils = checkNotNull(ansiblegalaxyPathUtils);
-        this.ansiblegalaxyDataAccess = checkNotNull(ansiblegalaxyDataAccess);
     }
 
     /**
@@ -104,7 +92,7 @@ public class AnsibleGalaxyProxyFacetImpl
 
     @Nullable
     @Override
-    protected Content getCachedContent(final Context context) {
+    protected Content getCachedContent(final Context context) throws IOException {
         AssetKind assetKind = context.getAttributes().require(AssetKind.class);
 
         TokenMatcher.State matcherState = ansiblegalaxyPathUtils.matcherState(context);
@@ -134,15 +122,8 @@ public class AnsibleGalaxyProxyFacetImpl
         }
     }
 
-    @TransactionalTouchBlob
     public Content getAsset(final String assetPath) {
-        StorageTx tx = UnitOfWork.currentTx();
-
-        Asset asset = ansiblegalaxyDataAccess.findAsset(tx, tx.findBucket(getRepository()), assetPath);
-        if (asset == null) {
-            return null;
-        }
-        return ansiblegalaxyDataAccess.toContent(asset, tx.requireBlob(asset.requireBlobRef()));
+        return content().get(assetPath).orElse(null);
     }
 
     @Override
@@ -160,8 +141,7 @@ public class AnsibleGalaxyProxyFacetImpl
             case COLLECTION_VERSION_LIST_LIMIT:
                 return putAsset(context, content, ansiblegalaxyPathUtils.collectionVersionLimitPath(matcherState), assetKind);
             case COLLECTION_VERSION_DETAIL:
-                return putComponent(context, ansiblegalaxyPathUtils.getCollectionAttributes(matcherState), content,
-                        ansiblegalaxyPathUtils.collectionVersionDetailPath(matcherState), assetKind);
+                return putAsset(context, content, ansiblegalaxyPathUtils.collectionVersionDetailPath(matcherState), assetKind);
             case COLLECTION_ARTIFACT:
                 return putComponent(context, ansiblegalaxyPathUtils.getCollectionAttributes(matcherState), content,
                         ansiblegalaxyPathUtils.collectionArtifactPath(matcherState), assetKind);
@@ -184,12 +164,15 @@ public class AnsibleGalaxyProxyFacetImpl
             final Content content,
             final String assetPath,
             final AssetKind assetKind) throws IOException {
-        StorageFacet storageFacet = facet(StorageFacet.class);
         try (InputStream updatedStream = getUpdatedContent(context, assetKind, content.openInputStream())) {
-            try (TempBlob tempBlob = storageFacet.createTempBlob(updatedStream, HASH_ALGORITHMS)) {
-                return ansiblegalaxyDataAccess.maybeCreateAndSaveAsset(getRepository(), assetPath, assetKind, tempBlob,
-                        content);
-            }
+            StreamPayload updatedPayload = new StreamPayload(
+                () -> updatedStream,
+                content.getSize(),
+                content.getContentType()
+            );
+            Content updatedContent = new Content(updatedPayload);
+            updatedContent.getAttributes().backing().putAll(content.getAttributes().backing());
+            return content().put(assetPath, updatedContent);
         }
     }
 
@@ -199,12 +182,15 @@ public class AnsibleGalaxyProxyFacetImpl
             final Content content,
             final String assetPath,
             final AssetKind assetKind) throws IOException {
-        StorageFacet storageFacet = facet(StorageFacet.class);
         try (InputStream updatedStream = getUpdatedContent(context, assetKind, content.openInputStream())) {
-            try (TempBlob tempBlob = storageFacet.createTempBlob(updatedStream, HASH_ALGORITHMS)) {
-                return ansiblegalaxyDataAccess.maybeCreateAndSaveComponent(getRepository(), ansibleGalaxyAttributes, assetPath,
-                        tempBlob, content, assetKind);
-            }
+            StreamPayload updatedPayload = new StreamPayload(
+                () -> updatedStream,
+                content.getSize(),
+                content.getContentType()
+            );
+            Content updatedContent = new Content(updatedPayload);
+            updatedContent.getAttributes().backing().putAll(content.getAttributes().backing());
+            return content().put(assetPath, updatedContent);
         }
     }
 
@@ -295,21 +281,7 @@ public class AnsibleGalaxyProxyFacetImpl
             final Context context,
             final Content content,
             final CacheInfo cacheInfo) throws IOException {
-        setCacheInfo(content, cacheInfo);
-    }
-
-    @TransactionalTouchMetadata
-    public void setCacheInfo(final Content content, final CacheInfo cacheInfo) throws IOException {
-        StorageTx tx = UnitOfWork.currentTx();
-        Asset asset = Content.findAsset(tx, tx.findBucket(getRepository()), content);
-        if (asset == null) {
-            log.debug("Attempting to set cache info for non-existent AnsibleGalaxy asset {}",
-                    content.getAttributes().require(Asset.class));
-            return;
-        }
-        log.debug("Updating cacheInfo of {} to {}", asset, cacheInfo);
-        CacheInfo.applyToAsset(asset, cacheInfo);
-        tx.saveAsset(asset);
+        // Cache info is now handled automatically by Content API
     }
 
     @Override
@@ -334,5 +306,8 @@ public class AnsibleGalaxyProxyFacetImpl
         // TODO: this should be a configurable repository item entered by user on UI
         return "https://github.com";
     }
-
+    
+    private AnsibleGalaxyContentFacet content() {
+        return getRepository().facet(AnsibleGalaxyContentFacet.class);
+    }
 }

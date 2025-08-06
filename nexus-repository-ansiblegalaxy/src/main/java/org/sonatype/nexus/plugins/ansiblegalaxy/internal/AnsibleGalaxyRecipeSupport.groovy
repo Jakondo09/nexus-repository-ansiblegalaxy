@@ -23,18 +23,14 @@ import org.sonatype.nexus.plugins.ansiblegalaxy.internal.util.QueryTokenMatcher
 import org.sonatype.nexus.repository.Format
 import org.sonatype.nexus.repository.RecipeSupport
 import org.sonatype.nexus.repository.Type
-import org.sonatype.nexus.repository.attributes.AttributesFacet
 import org.sonatype.nexus.repository.cache.NegativeCacheFacet
 import org.sonatype.nexus.repository.cache.NegativeCacheHandler
 import org.sonatype.nexus.repository.http.PartialFetchHandler
 import org.sonatype.nexus.repository.httpclient.HttpClientFacet
 import org.sonatype.nexus.repository.purge.PurgeUnusedFacet
 import org.sonatype.nexus.repository.routing.RoutingRuleHandler
-import org.sonatype.nexus.repository.search.ElasticSearchFacet
 import org.sonatype.nexus.repository.security.SecurityHandler
-import org.sonatype.nexus.repository.storage.DefaultComponentMaintenanceImpl
-import org.sonatype.nexus.repository.storage.StorageFacet
-import org.sonatype.nexus.repository.storage.UnitOfWorkHandler
+import org.sonatype.nexus.repository.content.maintenance.ContentMaintenanceFacet
 import org.sonatype.nexus.repository.view.ConfigurableViewFacet
 import org.sonatype.nexus.repository.view.Context
 import org.sonatype.nexus.repository.view.Matcher
@@ -63,17 +59,8 @@ abstract class AnsibleGalaxyRecipeSupport
     @Inject
     public Provider<ConfigurableViewFacet> viewFacet
 
-    //not in example
-    @Inject
-    public Provider<StorageFacet> storageFacet
 
-    //not in example
-    @Inject
-    public Provider<ElasticSearchFacet> searchFacet
 
-    //not in example
-    @Inject
-    public Provider<AttributesFacet> attributesFacet
 
     @Inject
     public ExceptionHandler exceptionHandler
@@ -96,14 +83,12 @@ abstract class AnsibleGalaxyRecipeSupport
     @Inject
     public ContentHeadersHandler contentHeadersHandler
 
-    @Inject
-    public UnitOfWorkHandler unitOfWorkHandler
 
     @Inject
     public HandlerContributor handlerContributor
 
     @Inject
-    public Provider<DefaultComponentMaintenanceImpl> componentMaintenanceFacet
+    public Provider<ContentMaintenanceFacet> componentMaintenanceFacet
 
     @Inject
     public Provider<HttpClientFacet> httpClientFacet
